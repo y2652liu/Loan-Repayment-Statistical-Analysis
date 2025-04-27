@@ -1,0 +1,186 @@
+---
+title: "1344_Project"
+output:
+  html_document: default
+  pdf_document: default
+date: "2024-10-04"
+---
+
+## Preparation
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(car)
+library(caret)
+library(ggplot2)
+library(reshape2)
+library(pROC)
+
+data <- read.csv("~/Desktop/application_data.csv")
+
+str(data)
+```
+
+## Data Cleaning
+
+```{r}
+# remove rows with null values except for OWN_CAR_AGE as 0 is meaningful if someone does not own a car
+cleaned_data <- data %>%
+  filter(complete.cases(select(., -OWN_CAR_AGE)))
+
+# check null
+sum(is.na(cleaned_data))
+```
+
+## Select Columns for the Model
+
+```{r}
+selected_data <- cleaned_data %>%
+  #select(TARGET, CODE_GENDER, NAME_FAMILY_STATUS, DAYS_BIRTH, AMT_INCOME_TOTAL, NAME_EDUCATION_TYPE, AMT_CREDIT, DAYS_EMPLOYED)
+  select(TARGET, CODE_GENDER, NAME_FAMILY_STATUS, DAYS_BIRTH, AMT_INCOME_TOTAL, NAME_EDUCATION_TYPE, AMT_CREDIT, DAYS_EMPLOYED, FLAG_OWN_CAR, FLAG_OWN_REALTY, OCCUPATION_TYPE)
+
+str(selected_data)
+```
+```{r}
+# Convert DAYS_BIRTH and DAYS_EMPLOYED to positive numbers
+selected_data <- selected_data %>%
+  mutate(
+    DAYS_BIRTH = abs(DAYS_BIRTH),
+    DAYS_EMPLOYED = abs(DAYS_EMPLOYED)
+  )
+
+head(selected_data)
+```
+
+
+```{r}
+# Modify the 'DAYS_BIRTH' column to represent age in years
+selected_data <- selected_data %>%
+  mutate(DAYS_BIRTH = (DAYS_BIRTH) / 365)
+
+# Verify the changes
+head(selected_data)
+```
+```{r}
+# Count the number of 0s and 1s in the 'TARGET' column
+target_counts <- table(selected_data$TARGET)
+
+# Print the counts
+print(target_counts)
+```
+
+## Correlation Maps
+
+```{r}
+# Pearson correlation matrix
+pearson_corr <- cor(selected_data %>% select_if(is.numeric), method = "pearson", use = "complete.obs")
+
+# Spearman correlation matrix
+spearman_corr <- cor(selected_data %>% select_if(is.numeric), method = "spearman", use = "complete.obs")
+
+pearson_melted <- melt(pearson_corr)
+spearman_melted <- melt(spearman_corr)
+
+ggplot(data = pearson_melted, aes(Var1, Var2, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, limit = c(-1, 1), space = "Lab") +
+  theme_minimal() +
+  labs(title = "Heatmap of Pearson's Correlation", x = "", y = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(data = spearman_melted, aes(Var1, Var2, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, limit = c(-1, 1), space = "Lab") +
+  theme_minimal() +
+  labs(title = "Heatmap of Spearman's Correlation", x = "", y = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Variable Transformation
+
+```{r}
+# convert categorical variables to factors
+selected_data$CODE_GENDER <- as.factor(selected_data$CODE_GENDER)
+selected_data$NAME_FAMILY_STATUS <- as.factor(selected_data$NAME_FAMILY_STATUS)
+selected_data$NAME_EDUCATION_TYPE <- as.factor(selected_data$NAME_EDUCATION_TYPE)
+selected_data$FLAG_OWN_CAR <- as.factor(selected_data$FLAG_OWN_CAR)
+selected_data$FLAG_OWN_REALTY <- as.factor(selected_data$FLAG_OWN_REALTY)
+selected_data$OCCUPATION_TYPE <- as.factor(selected_data$OCCUPATION_TYPE)
+
+sapply(selected_data, function(x) if(is.factor(x)) levels(x))
+str(selected_data)
+```
+
+## Check Multicollinearity using VIF
+
+```{r}
+# logistic regression model to check multicollinearity
+vif_model <- glm(TARGET ~ ., data = selected_data, family = "binomial")
+
+# VIF (Variance Inflation Factor)
+vif_values <- vif(vif_model)
+vif_values
+```
+
+## Logistic Regression
+
+```{r}
+# split data into training and test sets
+set.seed(123)
+trainIndex <- createDataPartition(selected_data$TARGET, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+train_data <- selected_data[ trainIndex,]
+test_data  <- selected_data[-trainIndex,]
+
+# train logistic regression model
+logistic_model <- glm(TARGET ~ ., data = train_data, family = "binomial")
+summary(logistic_model)
+
+## test logistic regression model
+logistic_model2 <- glm(TARGET ~ ., data = test_data, family = "binomial")
+summary(logistic_model2)
+
+# predict on test set
+predictions <- predict(logistic_model2, newdata = test_data, type = "response")
+
+# Convert predictions to binary output (0 or 1) based on a threshold
+predicted_class <- ifelse(predictions > 0.5, 1, 0)
+```
+
+## Evaluation
+```{r, message=FALSE}
+# Confusion matrix
+confusion_matrix <- confusionMatrix(as.factor(predicted_class), as.factor(test_data$TARGET))
+confusion_matrix
+
+# ROC curve
+roc_curve <- roc(as.numeric(test_data$TARGET), predictions)
+plot(roc_curve)
+auc(roc_curve)
+
+# CLF score
+accuracy <- confusion_matrix$overall['Accuracy']
+print(paste("CLF Score:", accuracy))
+
+# F1 Score
+precision <- confusion_matrix$byClass['Precision']
+recall <- confusion_matrix$byClass['Recall']
+f1_score <- 2 * (precision * recall) / (precision + recall)
+print(paste("F1 Score:", f1_score))
+```
+
+## ANOVA
+```{r}
+selected_data <- na.omit(selected_data)
+selected_data$TARGET <- as.numeric(as.character(selected_data$TARGET))
+anova_model <- aov(
+  TARGET ~ CODE_GENDER * NAME_FAMILY_STATUS * NAME_EDUCATION_TYPE + 
+           DAYS_BIRTH + AMT_INCOME_TOTAL + AMT_CREDIT + 
+           DAYS_EMPLOYED + FLAG_OWN_CAR + FLAG_OWN_REALTY + 
+           OCCUPATION_TYPE,
+  data = selected_data
+)
+summary(anova_model)
+```
+
